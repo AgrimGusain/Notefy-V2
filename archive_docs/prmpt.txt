@@ -1,0 +1,23 @@
+ Checkpoint: Audio-Notes (System Audio Capture MVP)
+
+  Context & Goal:
+  We are building a standalone, web-based lecture transcription app in D:\Chrome-Summarizer\Audio-Notes that listens to system audio
+  directly.
+
+  ✅ What has been done:
+  1. Isolated Architecture: Created an isolated project structure (/backend, /frontend, /data) with its own requirements.txt.
+  2. Native Loopback Capture: Successfully implemented Windows WASAPI loopback using the soundcard library. The application can natively
+     "hear" what the user's speakers output without Virtual Audio Cables.
+  3. FastAPI & UI Integration: Created a Python FastAPI server (server.py) connected to a sleek browser frontend (index.html) using
+     /api/start and /api/stop endpoints.
+  4. Offline Processing: Linked OpenAI's Whisper model to transcribe the chunked .wav file entirely in the background and write a full
+     text transcript upon stopping the recording.
+
+  🚀 What needs to be done next:
+  1. Real-time WebSockets: Upgrade the connection between server.py and index.html from stateless HTTP calls to a persistent WebSocket.
+     Pipe audio data in small chunks (e.g., 2-3 second intervals) to Whisper, and push the transcribed text back to the UI so notes appear
+     "simultaneously" as the speaker talks.
+  2. Automated Summarization: Take the raw output (which is currently one large block of Whisper text) and run it through a summarization
+     prompt so the end user gets neatly formatted, structured bullet points.
+  3. RAG-Ready Database: Swap the .txt transcript saving system out for a lightweight SQLite database (which easily maps to Vector DBs
+     down the line) so users can search through their archive of lecture notes.
