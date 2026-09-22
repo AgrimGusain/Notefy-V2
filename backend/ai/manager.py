@@ -63,3 +63,23 @@ async def generate(*, provider: str, transcript: str, title: str | None, api_key
                     "fallback_reason": external_error.safe_message}
         except Exception as exc:
             raise AIGenerationError("External and local AI generation failed.") from exc
+
+
+async def generate_grounded(*, provider: str, api_key: str | None, model: str | None,
+                            base_url: str | None, system_prompt: str, user_prompt: str,
+                            fallback_to_local: bool) -> dict:
+    """Generate an answer from a caller-bounded, grounded prompt only."""
+    if provider == "external":
+        try:
+            answer = await external.generate(api_key=api_key or "", model=model or "", base_url=base_url,
+                                             system_prompt=system_prompt, user_prompt=user_prompt)
+            return {"source": "external", "answer": answer}
+        except external.ExternalAIError as exc:
+            if not fallback_to_local: raise AIGenerationError(exc.safe_message) from exc
+    elif provider != "local":
+        raise AIGenerationError("Choose either the external or local AI provider.")
+    try:
+        # The existing local adapter accepts text only; it receives no workspace data beyond this prompt.
+        return {"source": "local" if provider == "local" else "local_fallback", "answer": await local.generate(transcript=f"{system_prompt}\n\n{user_prompt}", title="Grounded answer")}
+    except Exception as exc:
+        raise AIGenerationError("Grounded AI generation failed.") from exc

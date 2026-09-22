@@ -1,7 +1,35 @@
+# Python bytecode and test/tool caches
 __pycache__/
 *.py[cod]
-*.db
-data/recordings/*
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
 .venv/
 venv/
+env/
+ENV/
+
+# Secrets and local configuration
 .env
+.env.*
+!.env.example
+
+# Local Audio Notes data (never commit personal notes or recordings)
+data/audio_notes.db
+data/audio_notes.db-*
+data/provider_preferences.json
+data/recordings/
+data/recordings/**
+*.db
+*.sqlite
+*.sqlite3
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/

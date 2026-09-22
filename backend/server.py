@@ -33,6 +33,11 @@ from database import (
 from summarizer import summarize_transcript
 from ai.manager import generate as generate_ai_notes, AIGenerationError
 from ai.external import test_connection as test_external_connection, ExternalAIError
+from ai.settings import get_preferences, save_preferences, get_api_key
+from rag.indexer import index_lecture, remove_lecture_from_index, rebuild_index
+from rag.retriever import index_status
+from rag.service import answer_question
+from rag.citations import resolve_citation
 
 # Set up logging for events
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -45,6 +50,16 @@ async def lifespan(app: FastAPI):
     """Initialize database on startup."""
     logger.info("Initializing database...")
     init_database()
+    # Existing notes may predate the RAG feature and therefore have no chunks
+    # yet. Rebuild at startup so "Ask your notes" searches the whole local
+    # archive without requiring a hidden/manual maintenance step.
+    try:
+        indexed_chunks = await asyncio.to_thread(rebuild_index)
+        logger.info("Search index ready (%s chunks)", indexed_chunks)
+    except Exception:
+        # A broken index must not prevent the core notes application from
+        # starting; the RAG rebuild endpoint remains available for recovery.
+        logger.exception("Could not rebuild search index at startup")
     logger.info("Application startup complete")
     yield
     logger.info("Application shutdown")
@@ -270,6 +285,8 @@ async def transcription_worker(session_id: str, lecture_id: int, title: Optional
         # All chunks processed - finalize lecture and generate summary
         logger.info(f"[{session_id}] Finalizing lecture {lecture_id}")
         await asyncio.to_thread(finalize_lecture, lecture_id, status="complete")
+        # Derived index work is deliberately after recording finalization.
+        await asyncio.to_thread(index_lecture, lecture_id)
 
         await broadcast({
             "type": "transcription_complete",
@@ -374,6 +391,8 @@ async def _generate_and_save_summary(session_id: str, lecture_id: int, title: Op
 
         if not save_success:
             raise Exception("Failed to save summary to database")
+        # Include the newly saved Markdown summary in the derived index.
+        await asyncio.to_thread(index_lecture, lecture_id)
 
         # Broadcast summary completion
         await broadcast({
@@ -628,7 +647,7 @@ async def ai_summarize(payload: dict = Body(...)):
     try:
         result = await generate_ai_notes(
             provider=provider, transcript=lecture.get("full_transcript") or "", title=lecture.get("title"),
-            api_key=payload.get("api_key"), model=payload.get("model"), base_url=payload.get("base_url"),
+            api_key=get_api_key(payload.get("api_key")), model=payload.get("model") or get_preferences()["model"], base_url=payload.get("base_url") or get_preferences()["base_url"],
             prompt=payload.get("prompt"), fallback_to_local=bool(payload.get("fallback_to_local", True)),
         )
         return JSONResponse(content={"success": True, **result})
@@ -644,17 +663,69 @@ async def ai_summarize(payload: dict = Body(...)):
 @app.post("/api/ai/test")
 async def ai_test(payload: dict = Body(...)):
     """Safely verify external credentials without returning provider response data."""
-    api_key, model = payload.get("api_key"), payload.get("model")
+    api_key, model = get_api_key(payload.get("api_key")), payload.get("model") or get_preferences()["model"]
     if not isinstance(api_key, str) or not api_key.strip() or not isinstance(model, str) or not model.strip():
         return JSONResponse(status_code=422, content={"success": False, "message": "API key and model are required."})
     try:
-        await test_external_connection(api_key=api_key, model=model, base_url=payload.get("base_url"))
+        await test_external_connection(api_key=api_key, model=model, base_url=payload.get("base_url") or get_preferences()["base_url"])
         return JSONResponse(content={"success": True, "message": "External AI connection verified."})
     except ExternalAIError as exc:
         return JSONResponse(status_code=400, content={"success": False, "message": exc.safe_message})
     except Exception:
         logger.exception("AI connection test failed without logging request credentials")
         return JSONResponse(status_code=500, content={"success": False, "message": "Could not verify the external AI connection."})
+
+@app.get("/api/ai/preferences")
+async def ai_preferences():
+    """Never returns the secret; only whether the OS vault has one."""
+    return await asyncio.to_thread(get_preferences)
+
+@app.post("/api/ai/preferences")
+async def save_ai_preferences(payload: dict = Body(...)):
+    model, base_url, api_key = payload.get("model"), payload.get("base_url"), payload.get("api_key")
+    if model is not None and (not isinstance(model, str) or not model.strip()): raise HTTPException(422, "Model must be a non-empty string")
+    if base_url is not None and (not isinstance(base_url, str) or not base_url.strip()): raise HTTPException(422, "Base URL must be a non-empty string")
+    if api_key is not None and not isinstance(api_key, str): raise HTTPException(422, "API key must be a string")
+    try: return await asyncio.to_thread(save_preferences, model=model, base_url=base_url, api_key=api_key)
+    except RuntimeError as exc: raise HTTPException(503, str(exc))
+
+@app.post("/api/ai/ask")
+async def ai_ask(payload: dict = Body(...)):
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise HTTPException(422, "A non-empty question is required")
+    if len(question) > 2000: raise HTTPException(422, "Question is too long")
+    provider = payload.get("provider", "external")
+    if provider not in {"external", "local"}: raise HTTPException(422, "Choose an AI provider")
+    top_k = payload.get("top_k", 6)
+    if not isinstance(top_k, int) or not 1 <= top_k <= 12: raise HTTPException(422, "top_k must be between 1 and 12")
+    for key in ("folder_id", "lecture_id"):
+        if payload.get(key) is not None and not isinstance(payload[key], int): raise HTTPException(422, f"{key} must be an integer or null")
+    source_type = payload.get("source_type")
+    if source_type is not None and source_type not in {"transcript", "markdown"}: raise HTTPException(422, "Invalid source type")
+    try:
+        preferences = get_preferences()
+        return await answer_question(question=question.strip(), provider=provider, api_key=get_api_key(payload.get("api_key")), model=payload.get("model") or preferences["model"], base_url=payload.get("base_url") or preferences["base_url"], fallback_to_local=bool(payload.get("fallback_to_local", True)), top_k=top_k, folder_id=payload.get("folder_id"), lecture_id=payload.get("lecture_id"), source_type=source_type)
+    except AIGenerationError as exc:
+        return JSONResponse(status_code=400, content={"success":False, "message":str(exc)})
+
+@app.get("/api/rag/status")
+async def rag_status():
+    return await asyncio.to_thread(index_status)
+
+@app.post("/api/rag/rebuild")
+async def rag_rebuild():
+    try: return {"success": True, "indexed_chunks": await asyncio.to_thread(rebuild_index)}
+    except Exception:
+        logger.exception("RAG rebuild failed")
+        raise HTTPException(500, "Could not rebuild the retrieval index")
+
+@app.get("/api/rag/citations/{citation_id}")
+async def rag_citation(citation_id: str):
+    """Return a database-resolved source location for direct navigation."""
+    citation = await asyncio.to_thread(resolve_citation, citation_id)
+    if not citation: raise HTTPException(404, "Citation source no longer exists")
+    return citation
 
 # ----- Workspace API -----
 
@@ -699,7 +770,14 @@ async def patch_folder(folder_id: int, payload: dict = Body(...)):
 @app.delete("/api/folders/{folder_id:int}")
 async def remove_folder(folder_id: int, delete_contents: bool = False):
     try:
+        # capture source IDs before cascading deletion so no stale chunks remain
+        from database import SessionLocal, Lecture
+        session = SessionLocal()
+        try: source_ids = [item[0] for item in session.query(Lecture.id).filter(Lecture.folder_id == folder_id).all()]
+        finally: session.close()
         if not await asyncio.to_thread(delete_folder, folder_id, delete_contents): raise HTTPException(404, "Folder not found")
+        for source_id in source_ids: await asyncio.to_thread(remove_lecture_from_index, source_id)
+        if delete_contents: await asyncio.to_thread(rebuild_index)
         return {"success": True}
     except HTTPException: raise
     except Exception as exc: _workspace_error(exc)
@@ -710,11 +788,14 @@ async def post_note(payload: dict = Body(...)):
     if not isinstance(title, str) or not title.strip(): raise HTTPException(422, "A note title is required")
     if payload.get("source_type", "native") not in {"native", "linked", "imported"}: raise HTTPException(422, "Invalid source type")
     try:
-        return await asyncio.to_thread(create_note, title, payload.get("folder_id"), payload.get("summary_markdown", ""), payload.get("source_type", "native"), payload.get("source_relative_path"))
+        note = await asyncio.to_thread(create_note, title, payload.get("folder_id"), payload.get("summary_markdown", ""), payload.get("source_type", "native"), payload.get("source_relative_path"))
+        await asyncio.to_thread(index_lecture, note["id"])
+        return note
     except Exception as exc: _workspace_error(exc)
 
 @app.delete("/api/notes/{note_id:int}")
 async def remove_note(note_id: int):
+    await asyncio.to_thread(remove_lecture_from_index, note_id)
     if not await asyncio.to_thread(delete_note, note_id): raise HTTPException(404, "Note not found")
     return {"success": True}
 
@@ -741,7 +822,9 @@ async def import_markdown(files: List[UploadFile] = File(...)):
         try: content = raw.decode("utf-8")
         except UnicodeDecodeError: content = raw.decode("utf-8", errors="replace")
         title = path.stem.replace("_", " ").replace("-", " ")
-        created.append(await asyncio.to_thread(create_note, title, parent_id, content, "imported", str(path)))
+        note = await asyncio.to_thread(create_note, title, parent_id, content, "imported", str(path))
+        await asyncio.to_thread(index_lecture, note["id"])
+        created.append(note)
     if not created: raise HTTPException(422, "Select one or more Markdown (.md) files")
     return {"notes": created, "count": len(created)}
 
@@ -791,6 +874,8 @@ async def patch_lecture(lecture_id: int, payload: dict = Body(...)):
         lecture = await asyncio.to_thread(update_lecture, lecture_id, changes)
         if not lecture:
             raise HTTPException(status_code=404, detail=f"Lecture {lecture_id} not found")
+        if {"title", "summary_markdown", "segments", "folder_id"}.intersection(changes):
+            await asyncio.to_thread(index_lecture, lecture_id)
         return JSONResponse(content=lecture)
     except HTTPException:
         raise

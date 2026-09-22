@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 import os
 import uuid
+import shutil
 
 Base = declarative_base()
 
@@ -27,7 +28,7 @@ class Lecture(Base):
     ended_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(50), nullable=False, index=True)  # recording, transcribing, complete, error
     full_transcript = Column(Text, nullable=True)
-    summary_markdown = Column(Text, nullable=True)  # Reserved for Phase 6
+    summary_markdown = Column(Text, nullable=True)  # done
     error_message = Column(Text, nullable=True)
     is_manually_edited = Column(Boolean, nullable=False, default=False)
     is_favorite = Column(Boolean, nullable=False, default=False)
@@ -122,6 +123,35 @@ class TranscriptSegment(Base):
         }
 
 
+class RagChunk(Base):
+    """Rebuildable retrieval index; canonical content remains in lectures."""
+    __tablename__ = "rag_chunks"
+    id = Column(Integer, primary_key=True)
+    lecture_id = Column(Integer, ForeignKey("lectures.id"), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    source_kind = Column(String(20), nullable=False, index=True)
+    segment_id = Column(Integer, ForeignKey("transcript_segments.id"), nullable=True)
+    sequence_number = Column(Integer, nullable=True)
+    start_seconds = Column(Float, nullable=True)
+    end_seconds = Column(Float, nullable=True)
+    line_start = Column(Integer, nullable=True)
+    line_end = Column(Integer, nullable=True)
+    char_start = Column(Integer, nullable=True)
+    char_end = Column(Integer, nullable=True)
+    # JSON array.  A transcript chunk can span several immutable segments.
+    segment_ids = Column(Text, nullable=True)
+    embedding = Column(Text, nullable=True)
+    embedding_model = Column(String(120), nullable=True)
+    embedding_dimensions = Column(Integer, nullable=True)
+    folder_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    indexed_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (UniqueConstraint("lecture_id", "source_kind", "chunk_index", "content_hash", name="uq_rag_chunk_content"),)
+
+
 # ===== Database Setup =====
 
 def get_database_path() -> str:
@@ -173,6 +203,17 @@ def init_database():
         for name, definition in additions.items():
             if name not in existing:
                 connection.execute(text(f"ALTER TABLE lectures ADD COLUMN {name} {definition}"))
+        rag_columns = {column["name"] for column in inspect(engine).get_columns("rag_chunks")}
+        rag_additions = {"line_start": "INTEGER", "line_end": "INTEGER", "char_start": "INTEGER", "char_end": "INTEGER", "segment_ids": "TEXT"}
+        if any(name not in rag_columns for name in rag_additions):
+            backup = get_database_path() + ".pre-rag-citations-backup"
+            if os.path.exists(get_database_path()) and not os.path.exists(backup):
+                shutil.copy2(get_database_path(), backup)
+        for name, definition in rag_additions.items():
+            if name not in rag_columns:
+                connection.execute(text(f"ALTER TABLE rag_chunks ADD COLUMN {name} {definition}"))
+        # FTS remains derived and can always be rebuilt from RagChunk records.
+        connection.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(title, content, chunk_id UNINDEXED)"))
     print(f"Database initialized at: {get_database_path()}")
 
 
