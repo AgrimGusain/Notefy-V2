@@ -1,9 +1,15 @@
 """Database-backed citation resolution. Model output never supplies locations."""
 from __future__ import annotations
+import json
 from database import SessionLocal, RagChunk, Lecture
 from .prompts import citation_id, source_label
+def _block_ids(value):
+    try: ids=json.loads(value) if isinstance(value,str) else value
+    except ValueError: return []
+    return [item for item in ids if isinstance(item,str)] if isinstance(ids,list) else []
 def resolve_chunks(rows):
-    return [{"citation_id":citation_id(row),"chunk_id":row["id"],"source_type":"transcript" if row["source_kind"]=="transcript" else "document","source_name":row["title"],"title":row["title"],"document_id":row["lecture_id"] if row["source_kind"]=="markdown" else None,"lecture_id":row["lecture_id"] if row["source_kind"]=="transcript" else None,"line_start":row.get("line_start"),"line_end":row.get("line_end"),"char_start":row.get("char_start"),"char_end":row.get("char_end"),"timestamp_start":row.get("start_seconds"),"timestamp_end":row.get("end_seconds"),"segment_ids":row.get("segment_ids"),"content":row["content"],"snippet":row["content"][:280],"label":source_label(row)} for row in rows]
+    # block_ids/heading/section_id let the frontend locate the cited block in the rendered note (frontend/js/lectures.js).
+    return [{"citation_id":citation_id(row),"chunk_id":row["id"],"source_type":"transcript" if row["source_kind"]=="transcript" else "document","source_name":row["title"],"title":row["title"],"document_id":row["lecture_id"] if row["source_kind"]=="markdown" else None,"lecture_id":row["lecture_id"] if row["source_kind"]=="transcript" else None,"line_start":row.get("line_start"),"line_end":row.get("line_end"),"char_start":row.get("char_start"),"char_end":row.get("char_end"),"timestamp_start":row.get("start_seconds"),"timestamp_end":row.get("end_seconds"),"segment_ids":row.get("segment_ids"),"block_ids":(blocks:=_block_ids(row.get("block_ids"))),"section_id":blocks[0].split("--")[0] if blocks else None,"heading":row.get("heading"),"content":row["content"],"snippet":row["content"][:280],"label":source_label(row)} for row in rows]
 def resolve_citation(source_id):
     if not isinstance(source_id,str) or len(source_id)<2 or source_id[0] not in "CT" or not source_id[1:].isdigit():return None
     session=SessionLocal()
@@ -12,5 +18,5 @@ def resolve_citation(source_id):
         if not found:return None
         chunk,lecture=found
         if (source_id[0]=="C") != (chunk.source_kind=="markdown"):return None
-        return resolve_chunks([{"id":chunk.id,"lecture_id":chunk.lecture_id,"content":chunk.content,"source_kind":chunk.source_kind,"line_start":chunk.line_start,"line_end":chunk.line_end,"char_start":chunk.char_start,"char_end":chunk.char_end,"start_seconds":chunk.start_seconds,"end_seconds":chunk.end_seconds,"segment_ids":chunk.segment_ids,"title":lecture.title,"source_relative_path":lecture.source_relative_path}])[0]
+        return resolve_chunks([{"id":chunk.id,"lecture_id":chunk.lecture_id,"content":chunk.content,"source_kind":chunk.source_kind,"line_start":chunk.line_start,"line_end":chunk.line_end,"char_start":chunk.char_start,"char_end":chunk.char_end,"start_seconds":chunk.start_seconds,"end_seconds":chunk.end_seconds,"segment_ids":chunk.segment_ids,"block_ids":chunk.block_ids,"heading":chunk.heading,"title":lecture.title,"source_relative_path":lecture.source_relative_path}])[0]
     finally:session.close()

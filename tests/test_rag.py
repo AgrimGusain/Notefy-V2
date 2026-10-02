@@ -22,7 +22,7 @@ def test_rag_transcript_and_markdown_keyword_index():
         finalize_lecture(lecture_id)
         index_lecture(lecture_id)
         assert search_chunks("What is LLM", lecture_id=lecture_id)
-    finally: remove_lecture_from_index(lecture_id)
+    finally: remove_lecture_from_index(lecture_id); delete_note(lecture_id)
 
     note = create_note(f"rag note {uuid.uuid4()}", None, "# Graphs\n\nBreadth first search visits neighbors level by level.")
     try:

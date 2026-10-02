@@ -36,8 +36,12 @@ from database import (
     get_lecture_by_session_id,
     list_lectures,
     search_lectures,
-    get_database_path
+    get_database_path,
+    delete_note,
 )
+
+# Lectures created by this smoke test; removed afterwards so the live archive is left unchanged.
+CREATED = []
 
 def test_database():
     print("=== Audio-Notes Database Smoke Test ===\n")
@@ -52,6 +56,7 @@ def test_database():
     print("2. Creating test lecture...")
     session_id = f"test_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     lecture_id = create_lecture(session_id, "Test Lecture on Python Programming")
+    CREATED.append(lecture_id)
     print(f"   ✓ Lecture created with ID: {lecture_id}\n")
 
     # Test 3: Save transcript segments (including idempotent test)
@@ -135,6 +140,7 @@ def test_database():
     print("10. Testing multiple lectures and ordering...")
     session_id_2 = f"test_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_2"
     lecture_id_2 = create_lecture(session_id_2, "Advanced Python Concepts")
+    CREATED.append(lecture_id_2)
     save_transcript_segment(lecture_id_2, 1, 0.0, 4.0, "Welcome to advanced Python programming.")
     finalize_lecture(lecture_id_2, status="complete")
 
@@ -162,3 +168,6 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        for created_id in CREATED:
+            delete_note(created_id)

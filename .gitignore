@@ -22,6 +22,8 @@ ENV/
 # Local Audio Notes data (never commit personal notes or recordings)
 data/audio_notes.db
 data/audio_notes.db-*
+data/audio_notes.db.*
+data/*.bak
 data/provider_preferences.json
 data/recordings/
 data/recordings/**

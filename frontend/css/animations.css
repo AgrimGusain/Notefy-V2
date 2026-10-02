@@ -1,1 +1,57 @@
-.view.active{animation:paperIn .42s ease both}@keyframes paperIn{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{50%{transform:scale(1.45);opacity:.45}}@keyframes wave{to{height:22px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+.view.active{animation:paperIn var(--dur-page) var(--ease-out) both}@keyframes paperIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{50%{transform:scale(1.45);opacity:.45}}@keyframes wave{to{height:22px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* ===== Interaction feedback =====
+   One short, consistent vocabulary: colour/background shifts on hover, a 1px press, and small fades for content
+   that appears. Durations come from variables.css; the reduced-motion rule above collapses all of it. */
+.nav-link{text-decoration:underline;text-decoration-color:transparent;text-underline-offset:9px;transition:color var(--dur-fast),text-decoration-color var(--dur-med),text-underline-offset var(--dur-med) var(--ease-out)}
+.nav-link:hover{color:var(--orange-dark);text-decoration-color:rgba(169,71,32,.35)}
+.nav-link.active{text-decoration-color:currentColor;text-underline-offset:5px}
+.brand-mark{transition:transform var(--dur-med) var(--ease-out)}.brand:hover .brand-mark{transform:rotate(-4deg)}
+
+/* Paper buttons: a faint wash on hover, a 1px press. Primary (orange) buttons darken instead. */
+.paper-button,.tiny-action,.sidebar-button,.edit-button,.favorite-button,.editor-button,.toolbar-button,.add-section,.ai-actions button,.ai-presets button,.speed-btn,.rag-citation{transition:background-color var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast),transform var(--dur-fast)}
+.paper-button:hover,.tiny-action:hover,.sidebar-button:hover,.edit-button:hover,.favorite-button:hover,.editor-button:not(.save):hover,.add-section:hover,.ai-actions button:not(.primary):hover,.ai-presets button:hover,.speed-btn:hover,.rag-citation:hover{background-color:var(--wash);border-color:var(--ink)}
+.capture-stamp:hover,.new-recording:hover,.editor-button.save:hover,.ai-actions .primary:hover{background-color:#c95f2a}
+.capture-stamp,.new-recording{transition:transform var(--dur-fast),box-shadow var(--dur-fast),background-color var(--dur-fast)}
+:is(.paper-button,.tiny-action,.sidebar-button,.edit-button,.favorite-button,.editor-button,.toolbar-button,.add-section,.ai-actions button,.ai-presets button,.speed-btn,.rag-citation,.stop-button,.object-menu,.audio-play-toggle):active:not(:disabled){transform:translateY(1px)}
+.capture-stamp:active:not(:disabled),.new-recording:active{transform:translate(0,1px);box-shadow:1px 1px 0 rgba(40,35,25,.14)}
+.back-to-library{transition:color var(--dur-fast),transform var(--dur-med) var(--ease-out)}
+button:disabled{cursor:not-allowed}.ai-actions button:disabled{opacity:.55;cursor:progress}
+textarea:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--orange-dark);outline-offset:3px}
+
+/* Workspace: cards lift slightly and gain shadow; tree rows get a wash. */
+.workspace-folder,.notebook-card{transition:transform var(--dur-med) var(--ease-out),box-shadow var(--dur-med) var(--ease-out)}
+.workspace-folder:hover{box-shadow:5px 7px 0 rgba(40,35,25,.15)}.notebook-card:hover{box-shadow:6px 8px 0 rgba(40,35,25,.14)}
+.workspace-folder:active,.notebook-card:active{transform:translateY(-2px)}
+.tree-row{transition:background-color var(--dur-fast)}.tree-row:hover{background-color:rgba(250,243,227,.55)}
+.object-menu{border-radius:2px;transition:background-color var(--dur-fast)}.object-menu:hover{background-color:rgba(37,34,29,.08)}
+/* Cards fade in only when the folder/section/search changes (workspace.js toggles .is-entering), never on every re-render. */
+.workspace-grid.is-entering>*{animation:cardIn var(--dur-page) var(--ease-out) both}
+.workspace-grid.is-entering>:nth-child(2){animation-delay:30ms}.workspace-grid.is-entering>:nth-child(3){animation-delay:60ms}.workspace-grid.is-entering>:nth-child(4){animation-delay:90ms}.workspace-grid.is-entering>:nth-child(5){animation-delay:120ms}.workspace-grid.is-entering>:nth-child(6){animation-delay:150ms}.workspace-grid.is-entering>:nth-child(n+7){animation-delay:180ms}
+@keyframes cardIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Loading: shimmering paper placeholders for the workspace grid and an opening note. */
+.skeleton-card,.skeleton-line{background:linear-gradient(100deg,rgba(230,213,181,.35) 35%,rgba(250,243,227,.95) 50%,rgba(230,213,181,.35) 65%) 0 0/250% 100%;animation:shimmer 1.4s linear infinite}
+.skeleton-card{min-height:200px;border:1px solid var(--soft-line);box-shadow:var(--shadow)}
+.skeleton-line{height:12px;margin:14px 0;max-width:76ch}.skeleton-line:nth-child(3n+2){width:88%}.skeleton-line:nth-child(3n){width:64%}
+.lecture-document.is-loading #detail-title{min-height:.95em;width:min(420px,70%)}
+.lecture-document.is-loading #detail-title,.lecture-document.is-loading .detail-meta{color:transparent;background:linear-gradient(100deg,rgba(230,213,181,.45) 35%,rgba(250,243,227,.95) 50%,rgba(230,213,181,.45) 65%) 0 0/250% 100%;animation:shimmer 1.4s linear infinite}
+@keyframes shimmer{to{background-position:-250% 0}}
+
+/* Dialogs: backdrop fades, panel rises 8px. */
+.ai-modal,.editor-modal{animation:fadeIn var(--dur-med) ease both}
+.ai-panel,.editor-dialog{animation:panelIn var(--dur-med) var(--ease-out) both}
+@keyframes fadeIn{from{opacity:0}}@keyframes panelIn{from{opacity:0;transform:translateY(8px)}}
+.ai-modal .ai-panel label:has(>input[type=checkbox]){display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:.02em;font-size:11px}
+.ai-modal .ai-panel input[type=checkbox]{width:auto;margin:0;accent-color:var(--orange)}
+.ai-status:not(:empty),.rag-answer:not([hidden]),.ai-preview:not([hidden]){animation:fadeIn var(--dur-med) ease both}
+
+/* Favorite star pops once when added. */
+.favorite-button.pop svg{animation:favPop .32s var(--ease-out)}
+@keyframes favPop{40%{transform:scale(1.28) rotate(-8deg)}}
+
+/* Transcript reading and selection feedback. New live segments fade in so the eye finds them. */
+.lecture-document ::selection,.transcript-container ::selection{background:rgba(214,169,54,.4);color:var(--ink)}
+#detail-transcript-container .transcript-segment:hover{background-color:rgba(230,213,181,.28)}
+#transcript-container .transcript-segment{animation:cardIn var(--dur-page) var(--ease-out) both}
+.lecture-document.is-loading .detail-meta>*{visibility:hidden}

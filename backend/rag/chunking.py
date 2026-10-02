@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import os
+from .blocks import markdown_blocks
 
 @dataclass(frozen=True)
 class Chunk:
@@ -11,6 +12,9 @@ class Chunk:
     line_start: int | None = None; line_end: int | None = None
     char_start: int | None = None; char_end: int | None = None
     segment_ids: tuple[int, ...] = ()
+    # Markdown only: rendered-note block IDs in the cited range and the enclosing section heading.
+    block_ids: tuple[str, ...] = ()
+    heading: str | None = None
 
 def _settings() -> tuple[int, int]:
     return int(os.getenv("RAG_CHUNK_SIZE", "500")), int(os.getenv("RAG_CHUNK_OVERLAP", "75"))
@@ -43,6 +47,7 @@ def transcript_chunks(segments) -> list[Chunk]:
 def markdown_chunks(markdown: str) -> list[Chunk]:
     # Keep original newlines and offsets; citation ranges are recorded here, never reconstructed later.
     size, overlap = _settings(); lines = (markdown or "").splitlines(keepends=True)
+    blocks = markdown_blocks(markdown)
     result, start, heading = [], 0, ""
     while start < len(lines):
         while start < len(lines) and not lines[start].strip(): start += 1
@@ -57,8 +62,10 @@ def markdown_chunks(markdown: str) -> list[Chunk]:
         content = "".join(lines[start:end])
         if content.strip():
             # Heading is context only when it is actually part of the cited line range.
+            cited = [block for block in blocks if start + 1 <= block.line <= end]
             result.append(Chunk(content, "markdown", line_start=start + 1, line_end=end,
-                                char_start=sum(len(item) for item in lines[:start]), char_end=sum(len(item) for item in lines[:end])))
+                                char_start=sum(len(item) for item in lines[:start]), char_end=sum(len(item) for item in lines[:end]),
+                                block_ids=tuple(block.id for block in cited), heading=cited[0].heading if cited else None))
         heading = current_heading
         if end >= len(lines): break
         keep, back = 0, end

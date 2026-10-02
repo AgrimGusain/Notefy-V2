@@ -36,12 +36,13 @@ def index_lecture(lecture_id: int, embedding_provider=None) -> int:
             key = (chunk.source_kind, digest); row = existing.get(key); retained.add(key)
             if row is None:
                 vector = vectors.get(position)
-                row = RagChunk(lecture_id=lecture.id, chunk_index=position, content=chunk.content, content_hash=digest, source_kind=chunk.source_kind, segment_id=chunk.segment_id, sequence_number=chunk.sequence_number, start_seconds=chunk.start_seconds, end_seconds=chunk.end_seconds, line_start=chunk.line_start, line_end=chunk.line_end, char_start=chunk.char_start, char_end=chunk.char_end, segment_ids=json.dumps(chunk.segment_ids), embedding=json.dumps(vector) if vector else None, embedding_model=getattr(provider, "model", None), embedding_dimensions=len(vector) if vector else None, folder_id=lecture.folder_id, updated_at=now, indexed_at=now)
+                row = RagChunk(lecture_id=lecture.id, chunk_index=position, content=chunk.content, content_hash=digest, source_kind=chunk.source_kind, segment_id=chunk.segment_id, sequence_number=chunk.sequence_number, start_seconds=chunk.start_seconds, end_seconds=chunk.end_seconds, line_start=chunk.line_start, line_end=chunk.line_end, char_start=chunk.char_start, char_end=chunk.char_end, segment_ids=json.dumps(chunk.segment_ids), block_ids=json.dumps(chunk.block_ids), heading=chunk.heading, embedding=json.dumps(vector) if vector else None, embedding_model=getattr(provider, "model", None), embedding_dimensions=len(vector) if vector else None, folder_id=lecture.folder_id, updated_at=now, indexed_at=now)
                 session.add(row); session.flush()
             else:
                 row.chunk_index, row.folder_id, row.updated_at = position, lecture.folder_id, now
                 row.segment_id, row.sequence_number, row.start_seconds, row.end_seconds = chunk.segment_id, chunk.sequence_number, chunk.start_seconds, chunk.end_seconds
                 row.line_start, row.line_end, row.char_start, row.char_end, row.segment_ids = chunk.line_start, chunk.line_end, chunk.char_start, chunk.char_end, json.dumps(chunk.segment_ids)
+                row.block_ids, row.heading = json.dumps(chunk.block_ids), chunk.heading
             session.execute(text("DELETE FROM rag_chunks_fts WHERE chunk_id = :id"), {"id": row.id})
             session.execute(text("INSERT INTO rag_chunks_fts(title,content,chunk_id) VALUES (:title,:content,:id)"), {"title": lecture.title or "Untitled", "content": row.content, "id": row.id})
         stale = [row for key, row in existing.items() if key not in retained]
