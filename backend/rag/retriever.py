@@ -19,7 +19,7 @@ def fts_search(query,*,top_k=20,folder_id=None,lecture_id=None,source_type=None)
     terms=[part.lower() for part in re.findall(r"[A-Za-z0-9]+",query) if part.lower() not in _STOP_WORDS]
     if not terms:return []
     where,params=_filters(folder_id,lecture_id,source_type);params.update({"query":" OR ".join(f'{term}*' for term in terms[:12]),"limit":top_k})
-    sql="""SELECT c.id,c.lecture_id,c.segment_id,c.sequence_number,c.start_seconds,c.end_seconds,c.line_start,c.line_end,c.char_start,c.char_end,c.segment_ids,c.content,c.source_kind,c.folder_id,c.embedding,l.title,l.source_type,l.source_relative_path,bm25(rag_chunks_fts) score FROM rag_chunks_fts f JOIN rag_chunks c ON c.id=f.chunk_id JOIN lectures l ON l.id=c.lecture_id WHERE """+" AND ".join(["rag_chunks_fts MATCH :query"]+where)+" ORDER BY score LIMIT :limit"
+    sql="""SELECT c.id,c.lecture_id,c.segment_id,c.sequence_number,c.start_seconds,c.end_seconds,c.line_start,c.line_end,c.char_start,c.char_end,c.segment_ids,c.block_ids,c.heading,c.content,c.source_kind,c.folder_id,c.embedding,l.title,l.source_type,l.source_relative_path,bm25(rag_chunks_fts) score FROM rag_chunks_fts f JOIN rag_chunks c ON c.id=f.chunk_id JOIN lectures l ON l.id=c.lecture_id WHERE """+" AND ".join(["rag_chunks_fts MATCH :query"]+where)+" ORDER BY score LIMIT :limit"
     session=SessionLocal()
     try:return [dict(row)|{"fts_score":-float(row["score"])} for row in session.execute(text(sql),params).mappings().all()]
     finally:session.close()

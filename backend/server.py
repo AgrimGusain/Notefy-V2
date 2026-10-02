@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
@@ -29,10 +29,17 @@ from database import (
     update_lecture,
     list_folders, create_folder, update_folder, delete_folder, folder_children,
     create_note, delete_note,
+    create_clip, list_clips, get_clip, update_clip, delete_clip,
+    list_collections, create_collection, get_collection, update_collection, delete_collection,
+    add_clip_to_collection, remove_collection_item, reorder_collection, collection_source,
 )
+from audio_export import build_lecture_audio, remove_lecture_audio_cache
 from summarizer import summarize_transcript
 from ai.manager import generate as generate_ai_notes, AIGenerationError
 from ai.external import test_connection as test_external_connection, ExternalAIError
+from ai.synthesis import synthesize as synthesize_clips
+from recall import service as recall
+from database import list_recall_sessions, delete_recall_session
 from ai.settings import get_preferences, save_preferences, get_api_key
 from rag.indexer import index_lecture, remove_lecture_from_index, rebuild_index
 from rag.retriever import index_status
@@ -406,6 +413,7 @@ async def _generate_and_save_summary(session_id: str, lecture_id: int, title: Op
 
     except Exception as e:
         logger.error(f"[{session_id}] Summary generation failed: {e}")
+        failure = str(e)  # the except variable is cleared when the block ends; capture it for the closure below
 
         # Save error but keep lecture as complete (transcription succeeded)
         try:
@@ -418,9 +426,9 @@ async def _generate_and_save_summary(session_id: str, lecture_id: int, title: Op
                     if lec:
                         lec.status = "complete"  # Transcription succeeded
                         if not lec.error_message:
-                            lec.error_message = f"Summarization failed: {str(e)}"
+                            lec.error_message = f"Summarization failed: {failure}"
                         else:
-                            lec.error_message += f" | Summarization: {str(e)}"
+                            lec.error_message += f" | Summarization: {failure}"
                         session.commit()
                 finally:
                     session.close()
@@ -771,12 +779,14 @@ async def patch_folder(folder_id: int, payload: dict = Body(...)):
 async def remove_folder(folder_id: int, delete_contents: bool = False):
     try:
         # capture source IDs before cascading deletion so no stale chunks remain
-        from database import SessionLocal, Lecture
+        from database import SessionLocal, Lecture, _descendant_ids
         session = SessionLocal()
-        try: source_ids = [item[0] for item in session.query(Lecture.id).filter(Lecture.folder_id == folder_id).all()]
+        try: source_ids = [item[0] for item in session.query(Lecture.id).filter(Lecture.folder_id.in_({folder_id, *_descendant_ids(session, folder_id)})).all()]
         finally: session.close()
+        sessions = await asyncio.to_thread(_session_ids, source_ids)
         if not await asyncio.to_thread(delete_folder, folder_id, delete_contents): raise HTTPException(404, "Folder not found")
         for source_id in source_ids: await asyncio.to_thread(remove_lecture_from_index, source_id)
+        for session_id in sessions: await asyncio.to_thread(remove_lecture_audio_cache, session_id)
         if delete_contents: await asyncio.to_thread(rebuild_index)
         return {"success": True}
     except HTTPException: raise
@@ -793,10 +803,18 @@ async def post_note(payload: dict = Body(...)):
         return note
     except Exception as exc: _workspace_error(exc)
 
+def _session_ids(lecture_ids) -> list:
+    from database import SessionLocal, Lecture
+    session = SessionLocal()
+    try: return [row[0] for row in session.query(Lecture.session_id).filter(Lecture.id.in_(list(lecture_ids)))]
+    finally: session.close()
+
 @app.delete("/api/notes/{note_id:int}")
 async def remove_note(note_id: int):
+    sessions = await asyncio.to_thread(_session_ids, [note_id])
     await asyncio.to_thread(remove_lecture_from_index, note_id)
     if not await asyncio.to_thread(delete_note, note_id): raise HTTPException(404, "Note not found")
+    for session_id in sessions: await asyncio.to_thread(remove_lecture_audio_cache, session_id)
     return {"success": True}
 
 def _safe_relative_path(filename: str) -> Optional[PurePosixPath]:
@@ -852,6 +870,21 @@ async def get_lecture(lecture_id: int):
         logger.error(f"Error retrieving lecture {lecture_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve lecture")
 
+@app.get("/api/lectures/{lecture_id:int}/audio")
+async def get_lecture_audio(lecture_id: int):
+    """Serve a lecture's recorded audio, stitching its chunked WAV files into
+    one continuous file (cached on disk) the first time it's requested."""
+    lecture = await asyncio.to_thread(get_lecture_by_id, lecture_id)
+    if not lecture:
+        raise HTTPException(status_code=404, detail=f"Lecture {lecture_id} not found")
+    # The stitched file is cached permanently, so never build it from a recording that is still being captured.
+    if lecture["status"] in ("recording", "transcribing"):
+        raise HTTPException(status_code=409, detail="Audio is available once the recording has finished")
+    path = await asyncio.to_thread(build_lecture_audio, lecture["session_id"])
+    if not path:
+        raise HTTPException(status_code=404, detail="No audio is available for this lecture")
+    return FileResponse(path, media_type="audio/wav")
+
 @app.patch("/api/lectures/{lecture_id:int}")
 async def patch_lecture(lecture_id: int, payload: dict = Body(...)):
     """Update editable lecture fields and favorite metadata in one API."""
@@ -885,7 +918,7 @@ async def patch_lecture(lecture_id: int, payload: dict = Body(...)):
 
 @app.get("/api/lectures/search")
 async def search_lectures_endpoint(q: str = ""):
-    """Search lectures by title, full_transcript, or segment text."""
+    """Search lectures by title, transcript, AI summary, or segment text."""
     if not q or not q.strip():
         return JSONResponse(
             status_code=400,
@@ -898,6 +931,207 @@ async def search_lectures_endpoint(q: str = ""):
     except Exception as e:
         logger.error(f"Error searching lectures: {e}")
         raise HTTPException(status_code=500, detail="Search failed")
+
+# ----- Clips & collections API -----
+# Clips are saved transcript ranges; collections order clips from any number of
+# recordings. Neither ever modifies a recording or its transcript.
+
+def _int_list(value) -> bool:
+    return isinstance(value, list) and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+
+def _optional_text(payload: dict, key: str, limit: int):
+    value = payload.get(key)
+    if value is not None and (not isinstance(value, str) or len(value) > limit): raise HTTPException(422, f"{key} must be text of at most {limit} characters")
+    return value
+
+@app.get("/api/clips")
+async def get_clips(lecture_id: Optional[int] = None):
+    return {"clips": await asyncio.to_thread(list_clips, lecture_id)}
+
+@app.post("/api/clips")
+async def post_clip(payload: dict = Body(...)):
+    lecture_id, segment_ids, collection_id = payload.get("lecture_id"), payload.get("segment_ids"), payload.get("collection_id")
+    if not isinstance(lecture_id, int): raise HTTPException(422, "lecture_id must be an integer")
+    if not _int_list(segment_ids) or not segment_ids: raise HTTPException(422, "segment_ids must be a non-empty list of integers")
+    if collection_id is not None and not isinstance(collection_id, int): raise HTTPException(422, "collection_id must be an integer or null")
+    title = _optional_text(payload, "title", 500)
+    try: clip = await asyncio.to_thread(create_clip, lecture_id, segment_ids, title, collection_id)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    if not clip: raise HTTPException(404, "Recording not found")
+    return clip
+
+@app.get("/api/clips/{clip_id:int}")
+async def get_clip_endpoint(clip_id: int):
+    clip = await asyncio.to_thread(get_clip, clip_id)
+    if not clip: raise HTTPException(404, "Clip not found")
+    return clip
+
+@app.patch("/api/clips/{clip_id:int}")
+async def patch_clip(clip_id: int, payload: dict = Body(...)):
+    if "title" not in payload: raise HTTPException(400, "Only the clip title can be changed")
+    _optional_text(payload, "title", 500)
+    clip = await asyncio.to_thread(update_clip, clip_id, {"title": payload["title"]})
+    if not clip: raise HTTPException(404, "Clip not found")
+    return clip
+
+@app.delete("/api/clips/{clip_id:int}")
+async def remove_clip(clip_id: int):
+    if not await asyncio.to_thread(delete_clip, clip_id): raise HTTPException(404, "Clip not found")
+    return {"success": True}
+
+@app.get("/api/collections")
+async def get_collections():
+    return {"collections": await asyncio.to_thread(list_collections)}
+
+@app.post("/api/collections")
+async def post_collection(payload: dict = Body(...)):
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 255: raise HTTPException(422, "A collection title of at most 255 characters is required")
+    return await asyncio.to_thread(create_collection, title, _optional_text(payload, "description", 5000))
+
+@app.get("/api/collections/{collection_id:int}")
+async def get_collection_endpoint(collection_id: int):
+    collection = await asyncio.to_thread(get_collection, collection_id)
+    if not collection: raise HTTPException(404, "Collection not found")
+    return collection
+
+@app.patch("/api/collections/{collection_id:int}")
+async def patch_collection(collection_id: int, payload: dict = Body(...)):
+    changes = {key: payload[key] for key in ("title", "description") if key in payload}
+    if not changes: raise HTTPException(400, "No collection changes supplied")
+    if "title" in changes and (not isinstance(changes["title"], str) or not changes["title"].strip() or len(changes["title"].strip()) > 255): raise HTTPException(422, "A collection title of at most 255 characters is required")
+    _optional_text(payload, "description", 5000)
+    collection = await asyncio.to_thread(update_collection, collection_id, changes)
+    if not collection: raise HTTPException(404, "Collection not found")
+    return collection
+
+@app.delete("/api/collections/{collection_id:int}")
+async def remove_collection(collection_id: int):
+    if not await asyncio.to_thread(delete_collection, collection_id): raise HTTPException(404, "Collection not found")
+    return {"success": True}
+
+@app.post("/api/collections/{collection_id:int}/items")
+async def post_collection_item(collection_id: int, payload: dict = Body(...)):
+    clip_id = payload.get("clip_id")
+    if not isinstance(clip_id, int): raise HTTPException(422, "clip_id must be an integer")
+    try: collection = await asyncio.to_thread(add_clip_to_collection, collection_id, clip_id)
+    except ValueError as exc: raise HTTPException(404, str(exc))
+    if not collection: raise HTTPException(404, "Collection not found")
+    return collection
+
+@app.delete("/api/collections/{collection_id:int}/items/{item_id:int}")
+async def remove_collection_item_endpoint(collection_id: int, item_id: int):
+    collection = await asyncio.to_thread(remove_collection_item, collection_id, item_id)
+    if not collection: raise HTTPException(404, "Clip is not in this collection")
+    return collection
+
+@app.put("/api/collections/{collection_id:int}/order")
+async def put_collection_order(collection_id: int, payload: dict = Body(...)):
+    item_ids = payload.get("item_ids")
+    if not _int_list(item_ids): raise HTTPException(422, "item_ids must be a list of integers")
+    try: collection = await asyncio.to_thread(reorder_collection, collection_id, item_ids)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    if not collection: raise HTTPException(404, "Collection not found")
+    return collection
+
+@app.get("/api/collections/{collection_id:int}/source")
+async def get_collection_source(collection_id: int):
+    """Ordered, source-labelled transcript for future AI note generation / recall."""
+    source = await asyncio.to_thread(collection_source, collection_id)
+    if not source: raise HTTPException(404, "Collection not found")
+    return source
+
+@app.post("/api/collections/{collection_id:int}/synthesize")
+async def synthesize_collection(collection_id: int, payload: dict = Body(...)):
+    """Preview grounded notes combining a collection's clips. Nothing is saved; the client creates the note via POST /api/notes."""
+    provider = payload.get("provider", "external")
+    if provider not in {"external", "local"}: raise HTTPException(422, "Choose an AI provider")
+    clip_ids = payload.get("clip_ids")
+    if clip_ids is not None and not _int_list(clip_ids): raise HTTPException(422, "clip_ids must be a list of integers or null")
+    instructions = _optional_text(payload, "instructions", 2000)
+    try:
+        preferences = get_preferences()
+        result = await synthesize_clips(collection_id=collection_id, clip_ids=clip_ids, provider=provider, api_key=get_api_key(payload.get("api_key")),
+                                        model=payload.get("model") or preferences["model"], base_url=payload.get("base_url") or preferences["base_url"],
+                                        instructions=instructions, fallback_to_local=bool(payload.get("fallback_to_local", False)))
+        return {"success": True, **result}
+    except LookupError as exc: raise HTTPException(404, str(exc))
+    except ValueError as exc: return JSONResponse(status_code=400, content={"success": False, "message": str(exc)})
+    except AIGenerationError as exc: return JSONResponse(status_code=400, content={"success": False, "message": str(exc)})
+
+# ----- Active Recall -----
+# Questions and grades come from the model, but only over passages of the chosen
+# scope, and every citation is resolved from the database (recall/service.py).
+
+RECALL_TYPES = tuple(recall.QUESTION_TYPES)
+
+def _recall_ai(payload: dict) -> dict:
+    """Provider settings for one request. The API key is used for the call only and never stored with the session."""
+    recall.require_external(payload.get("provider", "external"))
+    preferences = get_preferences()
+    return {"api_key": get_api_key(payload.get("api_key")), "model": payload.get("model") or preferences["model"], "base_url": payload.get("base_url") or preferences["base_url"]}
+
+async def _recall_call(function, *args, **kwargs):
+    try:
+        result = function(*args, **kwargs)
+        session = await result if asyncio.iscoroutine(result) else result
+        return {"success": True, "session": session}
+    except LookupError as exc: raise HTTPException(404, str(exc))
+    except recall.RecallConflict as exc: return JSONResponse(status_code=409, content={"success": False, "message": str(exc), "code": exc.code})
+    except (ValueError, AIGenerationError) as exc: return JSONResponse(status_code=400, content={"success": False, "message": str(exc)})
+
+@app.get("/api/recall/sessions")
+async def get_recall_sessions():
+    return {"sessions": await asyncio.to_thread(list_recall_sessions)}
+
+@app.post("/api/recall/sessions")
+async def post_recall_session(payload: dict = Body(...)):
+    scope_type, scope_ids = payload.get("scope_type"), payload.get("scope_ids", [])
+    if scope_type not in recall.sources.SCOPE_TYPES: raise HTTPException(422, "scope_type must be one of: " + ", ".join(recall.sources.SCOPE_TYPES))
+    if not _int_list(scope_ids): raise HTTPException(422, "scope_ids must be a list of integers")
+    types = payload.get("question_types") or list(RECALL_TYPES)
+    if not isinstance(types, list) or not types or any(item not in RECALL_TYPES for item in types): raise HTTPException(422, "question_types must be a non-empty list of: " + ", ".join(RECALL_TYPES))
+    count = payload.get("question_count", 8)
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 30: raise HTTPException(422, "question_count must be between 1 and 30")
+    model = _optional_text(payload, "model", 200) or get_preferences()["model"]
+    return await _recall_call(asyncio.to_thread, recall.start_session, scope_type=scope_type, scope_ids=scope_ids,
+                              question_types=list(dict.fromkeys(types)), target_count=count, model=model)
+
+@app.get("/api/recall/sessions/{session_id:int}")
+async def get_recall_session_endpoint(session_id: int):
+    return await _recall_call(asyncio.to_thread, recall.load_session, session_id)
+
+@app.delete("/api/recall/sessions/{session_id:int}")
+async def remove_recall_session(session_id: int):
+    if not await asyncio.to_thread(delete_recall_session, session_id): raise HTTPException(404, "Recall session not found")
+    return {"success": True}
+
+@app.post("/api/recall/sessions/{session_id:int}/next")
+async def recall_next_question(session_id: int, payload: dict = Body(default={})):
+    try: settings = _recall_ai(payload)
+    except AIGenerationError as exc: return JSONResponse(status_code=400, content={"success": False, "message": str(exc)})
+    return await _recall_call(recall.next_question, session_id, **settings)
+
+@app.post("/api/recall/questions/{question_id:int}/answer")
+async def recall_answer(question_id: int, payload: dict = Body(...)):
+    answer = payload.get("answer")
+    if not isinstance(answer, str) or not answer.strip(): raise HTTPException(422, "Write an answer first, or skip the question")
+    if len(answer) > recall.MAX_ANSWER_CHARS: raise HTTPException(422, f"Answers are limited to {recall.MAX_ANSWER_CHARS} characters")
+    try: settings = _recall_ai(payload)
+    except AIGenerationError as exc: return JSONResponse(status_code=400, content={"success": False, "message": str(exc)})
+    return await _recall_call(recall.answer_question, question_id, answer.strip(), **settings)
+
+@app.post("/api/recall/questions/{question_id:int}/skip")
+async def recall_skip(question_id: int):
+    return await _recall_call(asyncio.to_thread, recall.skip_question, question_id)
+
+@app.post("/api/recall/questions/{question_id:int}/reveal")
+async def recall_reveal(question_id: int):
+    return await _recall_call(asyncio.to_thread, recall.reveal_question, question_id)
+
+@app.post("/api/recall/sessions/{session_id:int}/end")
+async def recall_end(session_id: int):
+    return await _recall_call(asyncio.to_thread, recall.end_session, session_id)
 
 # ----- Static Frontend -----
 

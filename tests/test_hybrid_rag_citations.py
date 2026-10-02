@@ -29,4 +29,4 @@ def test_transcript_range_is_from_segments():
         index_lecture(lecture); row=search_chunks("CPU scheduling", lecture_id=lecture)[0]
         citation=resolve_citation("T" + str(row["id"]))
         assert citation["timestamp_start"] == 0 and citation["timestamp_end"] == 15
-    finally: remove_lecture_from_index(lecture)
+    finally: remove_lecture_from_index(lecture); delete_note(lecture)

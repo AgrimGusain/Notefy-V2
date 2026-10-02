@@ -31,6 +31,6 @@
     else if (s === 'stopping') { app.stopTimer(); app.state.recordingState = 'stopping'; app.updateLiveStatusUI('processing', 'Stopping capture…'); }
     else if (s === 'transcribing') { app.state.recordingState = 'transcribing'; app.updateLiveStatusUI('processing', 'Transcribing…'); }
     else if (s === 'summarizing') { app.state.recordingState = 'summarizing'; app.updateLiveStatusUI('processing', 'Preparing notes…'); }
-    else if (s === 'complete') { app.state.recordingState = 'complete'; app.updateLiveStatusUI('ready', 'Recording complete'); app.fetchLectures(); setTimeout(() => { if (app.state.recordingState === 'complete') { app.state.recordingState = 'idle'; app.updateLiveStatusUI('ready', 'Ready to record'); } }, 3000); }
+    else if (s === 'complete') { app.state.recordingState = 'complete'; app.updateLiveStatusUI('ready', 'Recording complete'); app.refreshWorkspace ? app.refreshWorkspace() : app.fetchLectures({ preserveSearch: true }); setTimeout(() => { if (app.state.recordingState === 'complete') { app.state.recordingState = 'idle'; app.updateLiveStatusUI('ready', 'Ready to record'); } }, 3000); }
   };
 })();
