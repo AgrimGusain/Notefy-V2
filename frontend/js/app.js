@@ -15,6 +15,11 @@
   const escapeHTML=text=>text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
   const KATEX={throwOnError:false,errorColor:'#A94720',output:'htmlAndMathml'};
   const typeset=(tex,display)=>{if(window.katex){try{return window.katex.renderToString(tex,{...KATEX,displayMode:display});}catch(_){}}return `<span class="math-pending" data-tex="${escapeHTML(tex)}" data-display="${display}">${escapeHTML(tex)}</span>`;};
+  // GFM tables: a header row, a delimiter row (|---|:-:|), then body rows until a blank line or a line without "|".
+  // Pipes inside code spans or escaped as \| stay in the cell. An unclosed code span falls back to splitting on every pipe.
+  const TABLE_DELIM=/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  const splitRow=(row,code=true)=>{const cells=[],text=row.trim().replace(/^\|/,'');let cell='',ticks=0;for(let i=0;i<text.length;i++){const ch=text[i];if(ch==='\\'&&text[i+1]==='|'){cell+='|';i++;continue;}if(ch==='`'&&code){let run=1;while(text[i+run]==='`')run++;ticks=ticks===run?0:ticks||run;cell+=text.slice(i,i+run);i+=run-1;continue;}if(ch==='|'&&!ticks){cells.push(cell.trim());cell='';continue;}cell+=ch;}if(ticks)return splitRow(row,false);if(cell.trim())cells.push(cell.trim());return cells;};
+  const tableAlign=cell=>cell.startsWith(':')&&cell.endsWith(':')?'center':cell.endsWith(':')?'right':cell.startsWith(':')?'left':'';
   app.renderMath=root=>{if(!window.katex||!root)return;root.querySelectorAll('.math-pending').forEach(el=>{try{window.katex.render(el.dataset.tex,el,{...KATEX,displayMode:el.dataset.display==='true'});el.classList.remove('math-pending');}catch(_){}});};
   app.safeMarkdownToHTML=markdown=>{if(!markdown)return'';
     // Code spans and math are cut out before emphasis/link handling (so "*" and "_" inside them stay literal) and restored afterwards.
@@ -38,6 +43,12 @@
       const trimmed=raw.trim(),opener=trimmed.startsWith('$$')?'$$':trimmed.startsWith('\\[')?'\\[':null,closer=opener==='$$'?'$$':'\\]';
       if(opener){let end=-1;if(trimmed.length>4&&trimmed.endsWith(closer)&&trimmed.indexOf(closer,2)===trimmed.length-2)end=index;else if(trimmed===opener||!trimmed.slice(2).includes(closer)){for(let next=index+1;next<lines.length&&next<index+60;next++){if(lines[next].trim().endsWith(closer)){end=next;break;}if(!lines[next].trim())break;}}
         if(end>=0){const tex=lines.slice(index,end+1).join('\n').trim().slice(2,-2).trim();close();output+=`<div class="math-display" ${attrs(index,end)} data-tex="${escapeHTML(tex)}">${typeset(tex,true)}</div>`;index=end;continue;}}
+      // Every row keeps its own block ID so a citation highlights the exact row; the header also carries the delimiter row's ID.
+      if(raw.includes('|')&&index+1<lines.length&&TABLE_DELIM.test(lines[index+1])){const head=splitRow(raw),aligns=splitRow(lines[index+1]).map(tableAlign);
+        if(head.length===aligns.length){let end=index+2;while(end<lines.length&&lines[end].trim()&&lines[end].includes('|'))end++;
+          const cell=text=>text.split(/<br\s*\/?>/i).map(inline).join('<br>'),row=(cells,tag,from,to)=>`<tr ${attrs(from,to)}>${aligns.map((align,c)=>`<${tag}${align?` class="align-${align}"`:''}>${cell(cells[c]||'')}</${tag}>`).join('')}</tr>`;
+          let body='';for(let r=index+2;r<end;r++)body+=row(splitRow(lines[r]),'td',r,r);
+          close();output+=`<div class="table-wrap"><table><thead>${row(head,'th',index,index+1)}</thead>${body?`<tbody>${body}</tbody>`:''}</table></div>`;index=end-1;continue;}}
       if(/^ {0,3}([-*_])( *\1){2,} *$/.test(raw)){close();output+=`<hr ${attrs(index)}>`;continue;}
       const line=inline(raw),heading=line.match(/^(#{1,6})\s+(.*)$/),bullet=line.match(/^[\-*]\s+(.*)$/),num=line.match(/^\d+\.\s+(.*)$/),quote=line.match(/^&gt;\s?(.*)$/);
       if(heading){close();output+=`<h${heading[1].length} ${attrs(index)}>${heading[2]}</h${heading[1].length}>`;}

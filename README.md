@@ -7,6 +7,8 @@ Audio Notes keeps notes, recordings, database data, and AI credentials on your c
 
 - Nested folders and notebook-style notes
 - Markdown import, editing, and linked-folder workflows
+- GitHub-style Markdown rendering, including tables (with column alignment), fenced code, and KaTeX math
+- Card menus (**•••**) to rename, move, favorite, or delete notes and folders
 - Audio capture with optional Whisper transcription
 - AI summaries and an "Ask your notes" search experience
 - Favorites for keeping important lectures close
@@ -76,10 +78,11 @@ requirements.txt      Python dependencies
 
 ## Usage
 1. Create native folders and notes directly in the workspace.
-2. Use **Open Folder** to edit an existing Markdown directory without copying it.
-3. Use **Import Markdown** for Audio Notes-managed copies.
-4. Record a lecture, review the transcript, then summarize or ask questions across the archive.
-5. Star important lectures to collect them in **Favorites**.
+2. Use **Open Folder** (top of the workspace sidebar) to edit an existing Markdown directory without copying it.
+3. Use **Import Markdown** (just below it) for Audio Notes-managed copies. Tables, code blocks, and math in imported files render as they do on GitHub.
+4. Open a card's **•••** menu to rename, move (pick the destination from the folder tree), favorite, or delete a note or folder.
+5. Record a lecture, review the transcript, then summarize or ask questions across the archive.
+6. Star important lectures to collect them in **Favorites**.
 
 ## Development Checks
 ```bash
@@ -87,6 +90,8 @@ python -m compileall backend
 ```
 
 For audio issues, verify `ffmpeg -version` and device permissions. If port `8000` is busy, start the app on another port such as `8001`.
+
+The server stamps every script and stylesheet URL with the file's modification time (`js/app.js?v=…`) and sends `Cache-Control: no-cache`, so frontend edits appear on a normal refresh. If a page still looks out of date, press `Ctrl+F5` once.
 
 ## Future Improvements
 

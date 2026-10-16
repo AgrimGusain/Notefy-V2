@@ -1,4 +1,4 @@
-"""Note rendering: fenced code, display/inline math and inline code, with block IDs kept in sync with rag/blocks.py.
+"""Note rendering: fenced code, display/inline math, inline code and GFM tables, with block IDs kept in sync with rag/blocks.py.
 
 Runs the real renderer (frontend/js/app.js) in node. KaTeX is not loaded here, so math is emitted as
 pending TeX placeholders; typesetting itself is checked in the browser.
@@ -100,8 +100,26 @@ def test_normal_note_keeps_markdown_and_adds_code_and_math():
     assert r'data-tex="A \in \mathbb{R}^{m \times n}"' in html and r'data-tex="(AB)_{ij} = \sum_k A_{ik} B_{kj}"' in html  # "_" and "*" inside math untouched
     assert r'class="math-display"' in html and r'data-tex="\det(A) = ad - bc"' in html
     assert '<pre class="code-block"' in html and "const x = a * b * c;" in html and 'data-language="js"' in html
-    assert "| Col | Val |" in html  # tables render exactly as before (as text lines)
+    assert "<table>" in html and "<th>Col</th>" in html and "<td>a</td>" in html and "| Col |" not in html  # GFM table, not text lines
     assert html.count("<hr ") == 1 and ">---<" not in html  # the rule is drawn, not printed
+
+
+def test_gfm_tables_align_keep_escaped_pipes_and_cite_rows():
+    note = "| Left | Mid | Right |\n|:--|:-:|--:|\n| `a | b` | x \| y | **b**<br>c |\n| 1 |\n\nafter"
+    out = render(note)
+    html = out["html"]
+    assert '<th class="align-left">Left</th>' in html and '<th class="align-center">Mid</th>' in html and '<th class="align-right">Right</th>' in html
+    assert "<code>a | b</code>" in html and ">x | y<" in html  # pipes in code spans or escaped as \| stay in the cell
+    assert "<strong>b</strong><br>c" in html and "&lt;br" not in html  # <br> in a cell is a line break
+    assert html.count("<td") == 6  # a short row is padded to the header's width
+    # Each row is its own citable block; the header also carries the delimiter row's ID.
+    assert 'data-block-ids="top--1 top--2"' in html and 'data-block-id="top--3"' in html and 'data-block-id="top--4"' in html
+    assert '<p data-line="6"' in html  # the blank line ends the table
+
+
+def test_pipe_lines_without_a_delimiter_row_stay_text():
+    html = render("a | b\n---\n\n| one | two |\n| --- |")["html"]
+    assert "<table>" not in html and "<p " in html and "<hr " in html  # header/delimiter column counts must match
 
 
 def test_unclosed_constructs_and_escaping_are_safe():

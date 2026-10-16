@@ -8,6 +8,7 @@ import sys
 import asyncio
 import json
 import logging
+import re
 import time
 import whisper
 from typing import Optional, List
@@ -1140,10 +1141,32 @@ frontend_path = os.path.join(os.path.dirname(__file__), "../frontend")
 
 # The frontend is split into focused presentation and behavior files.  Keep the
 # existing page and API routes intact while exposing only those static assets.
+# "no-cache" makes the browser revalidate (cheaply, via ETag) on every load, so edited
+# JS/CSS take effect on a normal refresh instead of a stale cached copy being reused.
+@app.middleware("http")
+async def revalidate_frontend(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith(("/js/", "/css/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 app.mount("/css", StaticFiles(directory=os.path.join(frontend_path, "css")), name="frontend-css")
 app.mount("/js", StaticFiles(directory=os.path.join(frontend_path, "js")), name="frontend-js")
+
+_ASSET_REF = re.compile(r'((?:src|href)=")((?:js|css)/[\w.-]+\.(?:js|css))(?:\?[^"]*)?"')
+
+def _versioned_assets(html: str) -> str:
+    """Stamp each local script/stylesheet URL with its file's mtime (?v=...), so an edited
+    file gets a new URL and the browser can never keep running a stale cached copy."""
+    def stamp(match):
+        try:
+            version = int(os.path.getmtime(os.path.join(frontend_path, match.group(2))))
+        except OSError:
+            return match.group(0)
+        return f'{match.group(1)}{match.group(2)}?v={version}"'
+    return _ASSET_REF.sub(stamp, html)
 
 @app.get("/")
 def read_root():
     with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+        return HTMLResponse(content=_versioned_assets(f.read()))

@@ -130,6 +130,42 @@ Open your browser to: **http://localhost:8000**
 3. Restart server
 4. Should reconnect automatically
 
+### 6. Markdown Tables
+
+1. Click **⇣ Import Markdown** (top of the workspace sidebar, under **↗ Open Folder**)
+2. Import a `.md` file containing a table, for example:
+   ```markdown
+   | Left | Center | Right |
+   |:-----|:------:|------:|
+   | `a \| b` | **bold**<br>second line | 42 |
+   ```
+3. Open the imported note
+
+**Expected:**
+- A bordered table with a shaded header row, not lines of `| … |` text
+- Columns aligned left / center / right as the delimiter row says
+- `a | b` stays in one cell; `<br>` becomes a line break
+- On a narrow window the table scrolls sideways instead of squeezing
+- Asking a question whose answer is in a table row, then clicking the citation, highlights that row
+
+### 7. Note and Folder Actions
+
+1. Click **•••** on a note card
+
+**Expected:**
+- A menu appears: Rename, Move to…, Add to / Remove from favorites, Delete (no typed commands)
+- **Rename** opens an in-app dialog with the current title selected
+- **Move to…** shows a dropdown of the folder tree (plus "Workspace (root)")
+- **Delete** asks for confirmation in an in-app dialog
+- Escape or clicking outside closes the menu; arrow keys move between items
+
+2. Click **•••** on a folder card
+
+**Expected:**
+- Menu: New subfolder, Rename, Move to…, Delete
+- **Move to…** does not offer the folder itself or its subfolders
+- Deleting a non-empty folder asks a second time before deleting its contents
+
 ---
 
 ## Visual Quality Check
@@ -159,6 +195,10 @@ pip install soundcard soundfile
 - Check if port 8000 is available
 - Try: `netstat -ano | findstr :8000`
 - Another process might be using the port
+
+### Frontend changes don't appear after a refresh
+- Script and stylesheet URLs carry the file's modification time (`?v=…`), so a normal refresh should load new code
+- If the page was cached before that was added, press `Ctrl+F5` once
 
 ### Search doesn't work
 - Type at least 2-3 characters

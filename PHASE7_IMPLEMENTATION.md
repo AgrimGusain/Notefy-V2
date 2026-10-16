@@ -200,11 +200,14 @@ Custom implementation that:
 1. Escapes all HTML entities first
 2. Converts only safe markdown patterns:
    - Headers: `# Heading` → `<h1>Heading</h1>`
-   - Bold: `**text**` → `<strong>text</strong>`
-   - Lists: `- item` → `<li>item</li>`
+   - Bold / italic / underline: `**text**`, `*text*`, `++text++`
+   - Lists: `- item` → `<li>item</li>` (and `1.` numbered lists)
+   - Quotes, horizontal rules, inline code, fenced code blocks, KaTeX math
+   - GFM tables: header row + `|---|:-:|` delimiter row + body rows, with column alignment; `\|` or a `|` inside a code span stays in its cell, and `<br>` inside a cell becomes a line break
    - Paragraphs: text lines → `<p>text</p>`
-3. Never allows raw HTML through
-4. Limited to structural tags only
+3. Never allows raw HTML through (the only exception is `<br>` inside a table cell, converted to a line break after escaping)
+4. Gives every rendered block (including each table row) a `data-block-id` that mirrors `backend/rag/blocks.py`, so citations highlight the exact line or row
+5. Limited to structural tags only
 
 ### WebSocket Protocol Compatibility
 
